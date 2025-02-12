@@ -14,6 +14,7 @@
  | @link      http://websemantics.ca
  | @author    Web Semantics, Inc. Dev Team <team@websemantics.ca>
  | @author    Adnan M.Sagar, PhD. <adnan@websemantics.ca>
+ | @author    Sadashiv K Dalvi, <dalvisadashiv@gmail.com>
  | @credits   Built on cors-upload-sample, https://github.com/googledrive/cors-upload-sample
  */
 
@@ -156,7 +157,7 @@
         }
 
         this.contentType = opts.contentType || this.file.type || defaults.contentType
-        this.httpMethod = opts.fileId ? 'PUT' : 'POST'
+        this.httpMethod = opts.fileId ? 'PATCH' : 'POST'
 
         this.videoData = {
             name: (opts.name > '') ? opts.name : defaults.name,
@@ -193,15 +194,15 @@
         xhr.open(this.httpMethod, this.url, true)
         xhr.setRequestHeader('Authorization', 'Bearer ' + this.token)
         xhr.setRequestHeader('Content-Type', 'application/json')
+	      xhr.setRequestHeader('Accept', 'application/vnd.vimeo.*+json;version=3.4')
 
         xhr.onload = function(e) {
             // get vimeo upload  url, user (for available quote), ticket id and complete url
             if (e.target.status < 400) {
                 var response = JSON.parse(e.target.responseText)
-                this.url = response.upload_link_secure
+                this.url = response.upload.upload_link
                 this.user = response.user
-                this.ticket_id = response.ticket_id
-                this.complete_url = defaults.api_url + response.complete_uri
+                this.video_url = response.uri
                 this.sendFile_()
             } else {
                 this.onUploadError_(e)
@@ -209,9 +210,10 @@
         }.bind(this)
 
         xhr.onerror = this.onUploadError_.bind(this)
-        xhr.send(JSON.stringify({
-            type: 'streaming',
-            upgrade_to_1080: this.upgrade_to_1080
+	      xhr.send(JSON.stringify({"upload": {
+          "approach": "tus",
+          "size": this.file.size
+        }
         }))
     }
 
@@ -227,22 +229,24 @@
         var content = this.file
         var end = this.file.size
 
+        var xhr = new XMLHttpRequest()
+        xhr.open('PATCH', this.url, true)
         if (this.offset || this.chunkSize) {
             // Only bother to slice the file if we're either resuming or uploading in chunks
             if (this.chunkSize) {
                 end = Math.min(this.offset + this.chunkSize, this.file.size)
             }
             content = content.slice(this.offset, end)
+	          xhr.setRequestHeader('Upload-Offset', this.offset)
         }
-
-        var xhr = new XMLHttpRequest()
-        xhr.open('PUT', this.url, true)
-        xhr.setRequestHeader('Content-Type', this.contentType)
-            // xhr.setRequestHeader('Content-Length', this.file.size)
-        xhr.setRequestHeader('Content-Range', 'bytes ' + this.offset + '-' + (end - 1) + '/' + this.file.size)
+	      else {
+          xhr.setRequestHeader('Upload-Offset', 0)
+	      }
+        xhr.setRequestHeader('Content-Type', 'application/offset+octet-stream')
+	      xhr.setRequestHeader('Tus-Resumable', '1.0.0')
 
         if (xhr.upload) {
-            xhr.upload.addEventListener('progress', this.onProgress)
+          xhr.upload.addEventListener('progress', this.onProgress)
         }
         xhr.onload = this.onContentUploadSuccess_.bind(this)
         xhr.onerror = this.onContentUploadError_.bind(this)
@@ -256,9 +260,10 @@
      */
     me.prototype.resume_ = function() {
         var xhr = new XMLHttpRequest()
-        xhr.open('PUT', this.url, true)
-        xhr.setRequestHeader('Content-Range', 'bytes */' + this.file.size)
-        xhr.setRequestHeader('X-Upload-Content-Type', this.file.type)
+        xhr.open('PATCH', this.url, true)
+        xhr.setRequestHeader('Content-Type', 'application/offset+octet-stream')
+        xhr.setRequestHeader('Tus-Resumable', '1.0.0')
+	      xhr.setRequestHeader('Upload-Offset', this.offset)
         if (xhr.upload) {
             xhr.upload.addEventListener('progress', this.onProgress)
         }
@@ -280,35 +285,18 @@
     }
 
     /**
-     * The final step is to call vimeo.videos.upload.complete to queue up
-     * the video for transcoding.
+     * The final step is to call vimeo.videos.upload.complete
      *
      * If successful call 'onUpdateVideoData_'
      *
      * @private
      */
-    me.prototype.complete_ = function(xhr) {
-        var xhr = new XMLHttpRequest()
-        xhr.open('DELETE', this.complete_url, true)
-        xhr.setRequestHeader('Authorization', 'Bearer ' + this.token)
-
-        xhr.onload = function(e) {
-
-            // Get the video location (videoId)
-            if (e.target.status < 400) {
-                var location = e.target.getResponseHeader('Location')
-
-                // Example of location: ' /videos/115365719', extract the video id only
-                var video_id = location.split('/').pop()
-                    // Update the video metadata
-                this.onUpdateVideoData_(video_id)
-            } else {
-                this.onCompleteError_(e)
-            }
-        }.bind(this)
-
-        xhr.onerror = this.onCompleteError_.bind(this)
-        xhr.send()
+    me.prototype.complete_ = function(e) {
+      var location = this.video_url;
+      // Example of location: ' /videos/115365719', extract the video id only
+      var video_id = location.split('/').pop()
+      // Update the video metadata
+      this.onUpdateVideoData_(video_id)
     }
 
     /**
@@ -366,8 +354,8 @@
      * @param {object} e XHR event
      */
     me.prototype.onContentUploadSuccess_ = function(e) {
-        if (e.target.status == 200 || e.target.status == 201) {
-            this.complete_()
+        if (e.target.status == 200 || e.target.status == 201 || e.target.status == 204) {
+            this.complete_(e)
         } else if (e.target.status == 308) {
             this.extractRange_(e.target)
             this.retryHandler.reset()
